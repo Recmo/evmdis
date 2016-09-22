@@ -164,11 +164,15 @@ func CreateLabels(prog *Program) {
 
 func BuildExpressions(prog *Program) {
 	for _, block := range prog.Blocks {
+		fmt.Printf("Block\n");
 		lifted := make(InstructionPointerSet)
 		for i, inst := range block.Instructions {
+			
+			
 			// Find all the definitions that reach each argument of this op
 			var reaching ReachingDefinition
 			inst.Annotations.Get(&reaching)
+			// fmt.Printf("Inst %v (reaching %v)\n", inst.Op, len(reaching));
 			if len(reaching) != inst.Op.StackReads() {
 				log.Fatalf("Expected number of stack reads (%v) to equal reaching definition length (%v)", inst.Op.StackReads(), len(reaching))
 			}

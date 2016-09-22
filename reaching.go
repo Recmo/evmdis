@@ -51,15 +51,24 @@ type reachingState struct {
 }
 
 func PerformReachingAnalysis(prog *Program) error {
-	initial := &reachingState{
-		program: prog,
-		nextBlock: prog.Blocks[0],
-		stack: nil,
+	
+	for i := range prog.Blocks {
+		fmt.Printf("Block %v\n", i);
+		initial := &reachingState{
+			program: prog,
+			nextBlock: prog.Blocks[i],
+			stack: nil,
+		}
+		ExecuteAbstractly(initial)
+		//if result != nil {
+		//	return result
+		//}
 	}
-	return ExecuteAbstractly(initial)
+	return nil
 }
 
 func updateReachings(inst *Instruction, operands []InstructionPointer) {
+	fmt.Printf("Update %v\n", inst);
 	var reachings ReachingDefinition
 	inst.Annotations.Get(&reachings)
 	if reachings == nil {
@@ -68,7 +77,7 @@ func updateReachings(inst *Instruction, operands []InstructionPointer) {
 			reachings[i] = make(map[InstructionPointer]bool)
 		}
 	}
-
+	
 	for i, operand := range operands {
 		reachings[i][operand] = true
 	}
@@ -84,6 +93,10 @@ func (self *reachingState) Advance() ([]EvmState, error) {
 		opFrames, newStack := stack.Popn(op.StackReads())
 		operands := make([]InstructionPointer, len(opFrames))
 		for i, frame := range opFrames {
+			fmt.Printf("frame = %v\n", frame.Value);
+			if frame.Value == nil {
+				return nil, fmt.Errorf("Popped beyond top of stack.")
+			}
 			operands[i] = *frame.Value.(*InstructionPointer)
 		}
 		updateReachings(inst, operands)
@@ -139,11 +152,11 @@ func (self *reachingState) Advance() ([]EvmState, error) {
 				return nil, fmt.Errorf("Unexpected op %v makes %v writes to the stack", op, op.StackWrites())
 			}
 		}
-
+		
 		pc += op.OperandSize() + 1
 		stack = newStack
 	}
-
+	
 	if self.nextBlock.Next != nil {
 		return []EvmState{
 			&reachingState{
@@ -173,14 +186,17 @@ func PerformReachesAnalysis(prog *Program) {
 			if inst.Op.IsSwap() || inst.Op.IsDup() {
 				continue
 			}
+			
 
 			var reaching ReachingDefinition
 			inst.Annotations.Get(&reaching)
+			// fmt.Printf("Reach %v\n", inst);
 			if reaching != nil {
 				ptr := InstructionPointer{
 					OriginBlock: block,
 					OriginIndex: i,
 				}
+				// fmt.Printf("Reach %v %v\n", inst, len(reaching));
 				for _, pointers := range reaching {
 					for pointer := range pointers {
 						var reaches ReachesDefinition

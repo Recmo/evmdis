@@ -48,38 +48,47 @@ func (self *StackFrame) String() string {
 }
 
 func (self *StackFrame) Popn(n int) (values []*StackFrame, stack *StackFrame) {
-    stack = self
-    values = make([]*StackFrame, n)
+	stack = self
+	values = make([]*StackFrame, n)
+	
+	var neg = 0
     for i := 0; i < n; i++ {
-        values[i] = stack
-        stack = stack.Up
-    }
-    return values, stack
+		if stack == nil {
+			// Pad with nil
+			neg -= 1
+			values[i] = &StackFrame{nil, neg, nil}
+		} else {
+			values[i] = stack
+			stack = stack.Up
+		}
+	}
+	return values, stack
 }
 
-
 type EvmState interface {
-    Advance() ([]EvmState, error)
+	Advance() ([]EvmState, error)
 }
 
 func ExecuteAbstractly(initial EvmState) error {
-    stack := []EvmState{initial}
-    seen := make(map[EvmState]bool)
-
-    for len(stack) > 0 {
-        var state EvmState
-        state, stack = stack[len(stack) - 1], stack[:len(stack) - 1]
-        nextStates, err := state.Advance()
-        if err != nil {
-            return err
-        }
-        for _, nextState := range nextStates {
-            if !seen[nextState] {
-                stack = append(stack, nextState)
-                seen[nextState] = true
-            }
-        }
-    }
-
-    return nil
+	stack := []EvmState{initial}
+	seen := make(map[EvmState]bool)
+	
+	fmt.Printf("ExecuteAbstractly\n");
+	
+	for len(stack) > 0 {
+		var state EvmState
+		state, stack = stack[len(stack) - 1], stack[:len(stack) - 1]
+		nextStates, err := state.Advance()
+		if err != nil {
+			return err
+		}
+		for _, nextState := range nextStates {
+			if !seen[nextState] {
+				stack = append(stack, nextState)
+				seen[nextState] = true
+			}
+		}
+	}
+	
+	return nil
 }
