@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
+	"strings"
 	"log"
 	"os"
 	".."
@@ -21,17 +22,12 @@ func main() {
 	
 	fmt.Printf("# NewProgram\n");
 	program := evmdis.NewProgram(bytecode)
+	/*
 	for _, block := range program.Blocks {
 		offset := block.Offset
 		
-		// Print label
-		var label *evmdis.JumpLabel
-		block.Annotations.Get(&label)
-		if label != nil {
-			fmt.Printf("%v\n", label)
-		} else {
-			fmt.Print("block:\n")
-		}
+		// Label the block
+		fmt.Printf("block: (reads %v, writes %v)\n", block.Reads, block.Writes)
 		for _, instruction := range block.Instructions {
 			fmt.Printf("0x%X\t%v", offset, instruction.Op)
 			if instruction.Arg != nil {
@@ -41,52 +37,66 @@ func main() {
 			offset += instruction.Op.OperandSize() + 1
 		}
 		fmt.Printf("\n")
-		
-		// Update offset
 	}
+	*/
 	
-	return
-	
-	fmt.Printf("# PerformReachingAnalysis\n");
-	if err := evmdis.PerformReachingAnalysis(program); err != nil {
-		log.Fatalf("Error performing reaching analysis: %v", err)
-	}
-	fmt.Printf("# PerformReachesAnalysis\n");
-	evmdis.PerformReachesAnalysis(program)
-	fmt.Printf("# CreateLabels\n");
-	evmdis.CreateLabels(program)
-	fmt.Printf("# BuildExpressions\n");
-	evmdis.BuildExpressions(program)
-
+	fmt.Printf("# StackLabel\n");
 	for _, block := range program.Blocks {
 		offset := block.Offset
-
-		var label *evmdis.JumpLabel
-		block.Annotations.Get(&label)
-		if label != nil {
-			fmt.Printf("%v\n", label)
-		}
-
+		
+		stack := evmdis.CreateStack(block.Reads)
+		ssaCount := 0
+		
+		// Label the block
+		fmt.Printf("block(%v)\n", stack)
 		for _, instruction := range block.Instructions {
-			var reaching evmdis.ReachingDefinition
-			instruction.Annotations.Get(&reaching)
-
-			var reaches evmdis.ReachesDefinition
-			instruction.Annotations.Get(&reaches)
-
-			var expression evmdis.Expression
-			instruction.Annotations.Get(&expression)
-
-			if expression != nil {
-				fmt.Printf("0x%X\t%v\t%v\t%v\n", offset, expression, reaching, reaches)
-				if instruction.Op.StackWrites() == 1 && !instruction.Op.IsDup() {
-					fmt.Printf("0x%X\tPUSH(%v)\n", offset, expression)
-				} else {
-					fmt.Printf("0x%X\t%v\n", offset, expression)
-				}
+			
+			// Stack management
+			if instruction.Op.IsPush() {
+				value := fmt.Sprintf("0x%X", instruction.Arg)
+				stack.Push(value)
+				continue
 			}
+			if instruction.Op.IsSwap() {
+				stack.Swap(instruction.Op.OperandSuffix())
+				continue
+			}
+			if instruction.Op.IsDup() {
+				stack.Dup(instruction.Op.OperandSuffix())
+				continue
+			}
+			if instruction.Op == evmdis.POP {
+				stack.Pop()
+				continue
+			}
+			arguments := make([]string, 0)
+			for i := 0; i < instruction.Op.StackReads(); i++ {
+				arguments = append(arguments, stack.Pop())
+			}
+			results := make([]string, 0)
+			for i := 0; i < instruction.Op.StackWrites(); i++ {
+				ssaCount++
+				variable := fmt.Sprintf("x%v", ssaCount)
+				stack.Push(variable)
+				results = append(results, variable)
+			}
+			
+			// Print offset
+			fmt.Printf("0x%X\t", offset)
+			
+			// Print result
+			if len(results) > 0 {
+				fmt.Printf("%v = ", strings.Join(results, ", "))
+			}
+			
+			// Print opcode
+			fmt.Printf("%v(%v)\n", instruction.Op, strings.Join(arguments, ", "))
 			offset += instruction.Op.OperandSize() + 1
+		}
+		if stack.Size() > 0 {
+			fmt.Printf("\tstack = %v\n", stack)
 		}
 		fmt.Printf("\n")
 	}
+	
 }

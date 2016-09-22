@@ -1,94 +1,42 @@
 package evmdis
 
-import (
-    "fmt"
-)
-
-type StackFrame struct {
-    Up *StackFrame
-    Height int
-    Value interface{}
+type Stack struct {
+	values   []string
 }
 
-func NewFrame(up *StackFrame, value interface{}) *StackFrame {
-    if up != nil {
-        return &StackFrame{up, up.Height + 1, value}
-    } else {
-        return &StackFrame{nil, 0, value}
-    }
-}
-
-func (self *StackFrame) UpBy(num int) *StackFrame {
-    ret := self
-    for i := 0; i < num; i++ {
-        ret = ret.Up
-    }
-    return ret
-}
-
-func (self *StackFrame) Replace(num int, value interface{}) (*StackFrame, interface{}) {
-    if num == 0 {
-        return NewFrame(self.Up, value), self.Value
-    }
-    up, old := self.Up.Replace(num - 1, value)
-    return NewFrame(up, self.Value), old
-}
-
-func (self *StackFrame) Swap(num int) *StackFrame {
-    up, old := self.Up.Replace(num - 1, self.Value)
-    return NewFrame(up, old)
-}
-
-func (self *StackFrame) String() string {
-    values := make([]interface{}, 0, self.Height + 1)
-    for frame := self; frame != nil; frame = frame.Up {
-        values = append(values, frame.Value)
-    }
-    return fmt.Sprintf("%v", values)
-}
-
-func (self *StackFrame) Popn(n int) (values []*StackFrame, stack *StackFrame) {
-	stack = self
-	values = make([]*StackFrame, n)
-	
-	var neg = 0
-    for i := 0; i < n; i++ {
-		if stack == nil {
-			// Pad with nil
-			neg -= 1
-			values[i] = &StackFrame{nil, neg, nil}
-		} else {
-			values[i] = stack
-			stack = stack.Up
-		}
+func CreateStack(arguments int) *Stack {
+	stack := &Stack{
+		values: make([]string, 0),
 	}
-	return values, stack
-}
-
-type EvmState interface {
-	Advance() ([]EvmState, error)
-}
-
-func ExecuteAbstractly(initial EvmState) error {
-	stack := []EvmState{initial}
-	seen := make(map[EvmState]bool)
-	
-	fmt.Printf("ExecuteAbstractly\n");
-	
-	for len(stack) > 0 {
-		var state EvmState
-		state, stack = stack[len(stack) - 1], stack[:len(stack) - 1]
-		nextStates, err := state.Advance()
-		if err != nil {
-			return err
-		}
-		for _, nextState := range nextStates {
-			if !seen[nextState] {
-				stack = append(stack, nextState)
-				seen[nextState] = true
-			}
-		}
+	for i := 0; i < arguments; i++ {
+		stack.Push("abcdefghijklmnopqrstuvw"[i:i+1])
 	}
-	
-	return nil
+	return stack
+}
+
+func (stack *Stack) Size() int {
+	return len(stack.values)
+}
+
+func (stack *Stack) Push(value string) {
+	stack.values = append(stack.values, value)
+}
+
+func (stack *Stack) Pop() string {
+	n := len(stack.values) - 1
+	value := stack.values[n]
+	stack.values = stack.values[:n]
+	return value
+}
+
+func (stack *Stack) Dup(num int) {
+	n := len(stack.values) - 1
+	stack.Push(stack.values[n - num + 1])
+}
+
+func (stack *Stack) Swap(num int) {
+	n := len(stack.values) - 1
+	tmp := stack.values[n]
+	stack.values[n] = stack.values[n - num]
+	stack.values[n - num] = tmp
 }

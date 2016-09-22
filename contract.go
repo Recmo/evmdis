@@ -5,18 +5,10 @@ import (
 	"math/big"
 )
 
-/*type Analysis interface {
-	func Process(*Instruction) Analysis
-	func Combine(Analysis) Analysis
-	func Copy() Analysis
-	func Equals(Analysis) bool
-}*/
-
 type Instruction struct {
 	Op          OpCode
 	Arg         *big.Int
 	Annotations *TypeMap
-	//analyses map[reflect.Type]Analysis
 }
 
 func (self *Instruction) String() string {
@@ -30,6 +22,8 @@ func (self *Instruction) String() string {
 type BasicBlock struct {
 	Instructions    []Instruction
 	Offset          int
+	Reads           int
+	Writes          int
 	Next            *BasicBlock
 	Annotations     *TypeMap
 }
@@ -47,10 +41,14 @@ func NewProgram(bytecode []byte) *Program {
 	
 	currentBlock := &BasicBlock{
 		Offset: 0,
+		Reads: 0,
 		Annotations: NewTypeMap(),
 	}
 	
+	var currentStackIndex = 0
 	for i := 0; i < len(bytecode); i++ {
+		
+		// Read next opcode and optional argument
 		op := OpCode(bytecode[i])
 		size := op.OperandSize()
 		var arg *big.Int
@@ -70,13 +68,18 @@ func NewProgram(bytecode []byte) *Program {
 				program.Blocks = append(program.Blocks, currentBlock)
 				newBlock := &BasicBlock{
 					Offset: i,
+					Reads: 0,
 					Annotations: NewTypeMap(),
 				}
 				currentBlock.Next = newBlock
 				currentBlock = newBlock
 			}
 			currentBlock.Offset += 1
+			currentStackIndex = 0
+			
+			// Store the jump destination in a program global list
 			program.JumpDestinations[i] = currentBlock
+			fmt.Printf("Jump destination: %2x\n", i)
 	    }
 		
 		// Add a new instruction to the current block
@@ -87,15 +90,27 @@ func NewProgram(bytecode []byte) *Program {
 		}
 		currentBlock.Instructions = append(currentBlock.Instructions, instruction)
 		
-		// Start a new basic block after a JUMP or RETURN
+		// Update the current block's max stack read depth
+		currentStackIndex -= op.StackReads()
+		if currentStackIndex < 0 && (-currentStackIndex) > currentBlock.Reads {
+			currentBlock.Reads = -currentStackIndex
+		}
+		
+		// Update stack index
+		currentStackIndex += op.StackWrites()
+		currentBlock.Writes = currentStackIndex + currentBlock.Reads
+		
+		// Start a new basic block after a control flow statement
 		if op.IsControlFlow() {
 			program.Blocks = append(program.Blocks, currentBlock)
 			newBlock := &BasicBlock{
 				Offset: i + size + 1,
+				Reads: 0,
 				Annotations: NewTypeMap(),
 			}
 			currentBlock.Next = newBlock
 			currentBlock = newBlock
+			currentStackIndex = 0
 		}
 		i += size
 	}

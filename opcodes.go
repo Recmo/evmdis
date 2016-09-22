@@ -58,7 +58,6 @@ func (op OpCode) OperandSize() int {
 	return int(byte(op) - byte(PUSH1) + 1)
 }
 
-
 func (op OpCode) OperandSuffix() int {
 	if op.IsPush() {
 		return int(byte(op) - byte(PUSH1) + 1)
