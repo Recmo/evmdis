@@ -2,13 +2,14 @@ package evmdis
 
 import (
 	"fmt"
+	"strings"
 	"math/big"
 )
 
 type Instruction struct {
-	Op          OpCode
-	Arg         *big.Int
-	Annotations *TypeMap
+	Op              OpCode
+	Arg             *big.Int
+	Annotations     *TypeMap
 }
 
 func (self *Instruction) String() string {
@@ -21,28 +22,22 @@ func (self *Instruction) String() string {
 
 type BasicBlock struct {
 	Instructions    []Instruction
+	Label           string
 	Offset          int
 	Reads           int
 	Writes          int
-	Next            *BasicBlock
-	Annotations     *TypeMap
 }
 
 type Program struct {
-	Blocks              []*BasicBlock
-	JumpDestinations    map[int]*BasicBlock
-	//Instructions map[int]*Instruction
+	Blocks          []*BasicBlock
 }
 
 func NewProgram(bytecode []byte) *Program {
-	program := &Program{
-		JumpDestinations:   make(map[int]*BasicBlock),
-	}
-	
+	program := &Program{}
 	currentBlock := &BasicBlock{
+		Label: fmt.Sprintf("block_%v", len(program.Blocks)),
 		Offset: 0,
 		Reads: 0,
-		Annotations: NewTypeMap(),
 	}
 	
 	var currentStackIndex = 0
@@ -67,26 +62,19 @@ func NewProgram(bytecode []byte) *Program {
 			if len(currentBlock.Instructions) > 0 {
 				program.Blocks = append(program.Blocks, currentBlock)
 				newBlock := &BasicBlock{
+					Label: fmt.Sprintf("block_%v", len(program.Blocks)),
 					Offset: i,
 					Reads: 0,
-					Annotations: NewTypeMap(),
 				}
-				currentBlock.Next = newBlock
 				currentBlock = newBlock
 			}
-			currentBlock.Offset += 1
 			currentStackIndex = 0
-			
-			// Store the jump destination in a program global list
-			program.JumpDestinations[i] = currentBlock
-			fmt.Printf("Jump destination: %2x\n", i)
 	    }
 		
 		// Add a new instruction to the current block
 		instruction := Instruction{
 			Op: op,
 			Arg: arg,
-			Annotations: NewTypeMap(),
 		}
 		currentBlock.Instructions = append(currentBlock.Instructions, instruction)
 		
@@ -101,27 +89,128 @@ func NewProgram(bytecode []byte) *Program {
 		currentBlock.Writes = currentStackIndex + currentBlock.Reads
 		
 		// Start a new basic block after a control flow statement
-		if op.IsControlFlow() {
+		if op.IsControlFlow() && op != JUMPI {
 			program.Blocks = append(program.Blocks, currentBlock)
 			newBlock := &BasicBlock{
+				Label: fmt.Sprintf("block_%v", len(program.Blocks)),
 				Offset: i + size + 1,
 				Reads: 0,
-				Annotations: NewTypeMap(),
 			}
-			currentBlock.Next = newBlock
 			currentBlock = newBlock
 			currentStackIndex = 0
 		}
-		i += size
+		
+		// Skip operand bytes
+		i += op.OperandSize()
 	}
 	
-	if len(currentBlock.Instructions) > 0 || program.JumpDestinations[currentBlock.Offset] != nil {
+	if len(currentBlock.Instructions) > 0 {
 		program.Blocks = append(program.Blocks, currentBlock)
-	} else {
-		program.Blocks[len(program.Blocks) - 1].Next = nil
 	}
-	
-	fmt.Printf("Found %v basic blocks\n", len(program.Blocks));
 	
 	return program
+}
+
+func (program *Program) PrintAssembler() {
+	for _, block := range program.Blocks {
+		offset := block.Offset
+		
+		// Label the block
+		fmt.Printf("%v: (reads %v, writes %v)\n", block.Label,
+			block.Reads, block.Writes)
+		for _, instruction := range block.Instructions {
+			fmt.Printf("0x%X\t%v", offset, instruction.Op)
+			if instruction.Arg != nil {
+				fmt.Printf("\t 0x%X", instruction.Arg)
+			}
+			fmt.Printf("\n")
+			offset += instruction.Op.OperandSize() + 1
+		}
+		fmt.Printf("\n")
+	}
+}
+
+func (program *Program) ParseCreation() {
+	// The program is contract creation code. The entry point is 0x0 and will
+	// at some point use CODECOPY calls to set up the contract at the right
+	// location.
+	// For now we assume the basic behaviour of `solc`. The setup code is in
+	// one basic block (MSTORE, CODECOPY, RETURN) and the second basic block
+	// is the entry point for the Contract ABI.
+	program.Blocks[0].Label = "create"
+	program.Blocks[1].Label = "enter"
+	
+	// Adjust the offsets the blocks.
+	enterOffset := program.Blocks[1].Offset
+	for i := 1; i < len(program.Blocks); i++ {
+		program.Blocks[i].Offset -= enterOffset
+	}
+}
+
+
+func (program *Program) PrintSSA() {
+	for _, block := range program.Blocks {
+		offset := 0
+		nextOffset := block.Offset
+		stack := CreateStack(block.Reads)
+		ssaCount := 0
+		
+		// Label the block
+		if block.Reads > 0 {
+			fmt.Printf("%v(%v):\n", block.Label, stack)
+		} else {
+			fmt.Printf("%v:\n", block.Label)
+		}
+		for _, instruction := range block.Instructions {
+			
+			// Update offsets
+			offset = nextOffset
+			nextOffset = offset + instruction.Op.OperandSize() + 1
+			
+			// Stack management
+			if instruction.Op.IsPush() {
+				value := fmt.Sprintf("0x%X", instruction.Arg)
+				stack.Push(value)
+				continue
+			}
+			if instruction.Op.IsSwap() {
+				stack.Swap(instruction.Op.OperandSuffix())
+				continue
+			}
+			if instruction.Op.IsDup() {
+				stack.Dup(instruction.Op.OperandSuffix())
+				continue
+			}
+			if instruction.Op == POP {
+				stack.Pop()
+				continue
+			}
+			arguments := make([]string, 0)
+			for i := 0; i < instruction.Op.StackReads(); i++ {
+				arguments = append(arguments, stack.Pop())
+			}
+			results := make([]string, 0)
+			for i := 0; i < instruction.Op.StackWrites(); i++ {
+				ssaCount++
+				variable := fmt.Sprintf("x%v", ssaCount)
+				stack.Push(variable)
+				results = append(results, variable)
+			}
+			
+			// Print offset
+			fmt.Printf("0x%X\t", offset)
+			
+			// Print result
+			if len(results) > 0 {
+				fmt.Printf("%v = ", strings.Join(results, ", "))
+			}
+			
+			// Print opcode
+			fmt.Printf("%v(%v)\n", instruction.Op, strings.Join(arguments, ", "))
+		}
+		if stack.Size() > 0 {
+			fmt.Printf("\tstack = %v\n", stack)
+		}
+		fmt.Printf("\n")
+	}
 }

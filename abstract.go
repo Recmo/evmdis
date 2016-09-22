@@ -1,7 +1,15 @@
 package evmdis
 
+import (
+	"fmt"
+)
+
 type Stack struct {
 	values   []string
+}
+
+func (stack Stack) String() string {
+	return fmt.Sprintf("%v", stack.values)
 }
 
 func CreateStack(arguments int) *Stack {
