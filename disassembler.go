@@ -2,7 +2,6 @@ package evmdis
 
 import (
 	"fmt"
-	"strings"
 	"math/big"
 )
 
@@ -89,7 +88,7 @@ func NewProgram(bytecode []byte) *Program {
 		currentBlock.Writes = currentStackIndex + currentBlock.Reads
 		
 		// Start a new basic block after a control flow statement
-		if op.IsControlFlow() && op != JUMPI {
+		if op.IsControlFlow() {
 			program.Blocks = append(program.Blocks, currentBlock)
 			newBlock := &BasicBlock{
 				Label: fmt.Sprintf("block_%v", len(program.Blocks)),
@@ -147,7 +146,7 @@ func (program *Program) ParseCreation() {
 	}
 }
 
-
+/*
 func (program *Program) PrintSSA() {
 	for _, block := range program.Blocks {
 		offset := 0
@@ -169,8 +168,11 @@ func (program *Program) PrintSSA() {
 			
 			// Stack management
 			if instruction.Op.IsPush() {
-				value := fmt.Sprintf("0x%X", instruction.Arg)
-				stack.Push(value)
+				var item Expression
+				item = &Variable{
+					Label: fmt.Sprintf("0x%X", instruction.Arg),
+				}
+				stack.Push(item)
 				continue
 			}
 			if instruction.Op.IsSwap() {
@@ -185,11 +187,11 @@ func (program *Program) PrintSSA() {
 				stack.Pop()
 				continue
 			}
-			arguments := make([]string, 0)
+			arguments := make([]Expression, 0)
 			for i := 0; i < instruction.Op.StackReads(); i++ {
 				arguments = append(arguments, stack.Pop())
 			}
-			results := make([]string, 0)
+			results := make([]Expression, 0)
 			for i := 0; i < instruction.Op.StackWrites(); i++ {
 				ssaCount++
 				variable := fmt.Sprintf("x%v", ssaCount)
@@ -214,3 +216,4 @@ func (program *Program) PrintSSA() {
 		fmt.Printf("\n")
 	}
 }
+*/
