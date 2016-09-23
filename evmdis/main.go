@@ -26,11 +26,33 @@ func main() {
 	
 	fmt.Printf("# StackLabel\n");
 	ssa := evmdis.CompileSSA(program)
+	ssa.ComputeJumpTargets()
+	ssa.ComputeIncoming()
+	ssa.CollapseJumps()
 	for _, block := range ssa.Blocks {
 		
-		fmt.Printf("%v: %v → %v\n", block.Label, block.Inputs, block.Outputs)
+		fmt.Printf("0x%X %v: %v → %v\n", block.Offset, block.Label, block.Inputs,
+			block.Outputs)
+		for _, source := range block.Incoming {
+			fmt.Printf("\tfrom %v\n", source.Label)
+		}
+		condCounter := 0
 		for _, statement := range block.Statements {
-			fmt.Printf("\t%v\n", statement)
+			switch statement.Op {
+			case evmdis.JUMPDEST:
+			case evmdis.JUMP:
+				if block.NextBlock != nil {
+					fmt.Printf("\tJUMP(%v)\n", block.NextBlock.Label)
+				} else {
+					fmt.Printf("\t%v\n", statement)
+				}
+			case evmdis.JUMPI:
+				fmt.Printf("\tJUMPI %v %v\n", statement.Inputs[1],
+					block.CondBlocks[condCounter].Label)
+				condCounter++
+			default:
+				fmt.Printf("\t%v\n", statement)
+			}
 		}
 		fmt.Printf("\n")
 	}

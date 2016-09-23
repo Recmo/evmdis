@@ -54,14 +54,32 @@ func (statement Statement) String() string {
 }
 
 type StatementBlock struct {
+	Offset          int
 	Statements      []*Statement
 	Label           string
 	Inputs          []Variable
 	Outputs         []Expression
+	Incoming        []*StatementBlock
+	CondBlocks      []*StatementBlock
+	NextBlock       *StatementBlock
 }
 
 type SSAProgram struct {
 	Blocks          []*StatementBlock
+}
+
+func (block *StatementBlock) CanGoToNext() bool {
+	n := len(block.Statements)
+	if n == 0 {
+		return false
+	}
+	last := block.Statements[n - 1]
+	switch last.Op {
+	case JUMP, RETURN, SELFDESTRUCT, STOP:
+		return false
+	default:
+		return true
+	}
 }
 
 // A counter for generating unique identifiers in the block's scope
@@ -71,10 +89,14 @@ func CompileSSABlock(block *BasicBlock) *StatementBlock {
 	
 	// Create the StatementBlock
 	statements := &StatementBlock{
-		Statements: make([]*Statement, 0),
+		Offset:     block.Offset,
 		Label:      block.Label,
+		Statements: make([]*Statement, 0),
 		Inputs:     make([]Variable, 0),
 		Outputs:    nil,
+		Incoming:   make([]*StatementBlock, 0),
+		CondBlocks: make([]*StatementBlock, 0),
+		NextBlock:  nil,
 	}
 	
 	// Create an abstract stack and load it with input variables
@@ -137,13 +159,6 @@ func CompileSSABlock(block *BasicBlock) *StatementBlock {
 			stack.Push(variable)
 			statement.Output = &variable
 		}
-		
-		// Add offset as argument to JUMPDEST.
-		if instruction.Op == JUMPDEST {
-			statement.Inputs = append(statement.Inputs, Constant{
-				Value: big.NewInt(int64(block.Offset)),
-			})
-		}
 	}
 	
 	// Check if the stack is empty at the end of the StatementBlock
@@ -159,9 +174,135 @@ func CompileSSA(program *Program) *SSAProgram {
 	ssaProgram := &SSAProgram{
 		Blocks: make([]*StatementBlock, 0),
 	}
+	
+	// Add compile assembly blocks to SSA
 	for _, block := range program.Blocks {
 		ssaProgram.Blocks = append(ssaProgram.Blocks, CompileSSABlock(block))
+		n := len(ssaProgram.Blocks) - 1
+		
+		// Under certain condition the blocks can continue to the next
+		if n > 0 && ssaProgram.Blocks[n - 1].CanGoToNext() {
+			ssaProgram.Blocks[n - 1].NextBlock = ssaProgram.Blocks[n]
+		}
 	}
+	
+	// Add fake error block at offset 2. This is the default
+	// jump target for errors in solidity
+	ssaProgram.Blocks = append(ssaProgram.Blocks, &StatementBlock{
+		Offset:     2,
+		Label:      "ErrorTag",
+		Statements: make([]*Statement, 0),
+		Inputs:     make([]Variable, 0),
+		Outputs:    nil,
+		Incoming:   make([]*StatementBlock, 0),
+		CondBlocks: make([]*StatementBlock, 0),
+		NextBlock:  nil,
+	})
+	
 	return ssaProgram
 }
 
+func (ssa *SSAProgram) BlockByOffset(offset int) *StatementBlock {
+	for _, block := range ssa.Blocks {
+		if block.Offset == offset {
+			return block
+		}
+	}
+	return nil
+}
+
+func (ssa *SSAProgram) UpdateJumpTargets(block *StatementBlock) {
+	
+	// Clear existing
+	block.CondBlocks = make([]*StatementBlock, 0)
+	
+	// All statements
+	for _, statement := range block.Statements {
+		
+		// Filter JUMPS
+		if statement.Op != JUMP && statement.Op != JUMPI {
+			continue
+		}
+		
+		// Filter fixed JUMPS
+		constant, ok:= statement.Inputs[0].(Constant)
+		if !ok {
+			continue
+		}
+		target := int(constant.Value.Int64())
+		
+		// Find the target block
+		targetBlock := ssa.BlockByOffset(target)
+		if statement.Op == JUMPI {
+			block.CondBlocks = append(block.CondBlocks, targetBlock)
+		} else {
+			block.NextBlock = targetBlock
+		}
+	}
+}
+
+func (ssa *SSAProgram) ComputeJumpTargets() {
+	for _, block := range ssa.Blocks {
+		ssa.UpdateJumpTargets(block)
+	}
+}
+
+func (ssa *SSAProgram) ComputeIncoming() {
+	for _, block := range ssa.Blocks {
+		block.Incoming = make([]*StatementBlock, 0)
+		for _, source := range ssa.Blocks {
+			isTarget := false
+			if source.NextBlock == block {
+				isTarget = true
+			}
+			for _, sourceCond := range source.CondBlocks {
+				if sourceCond == block {
+					isTarget = true
+				}
+			}
+			if isTarget {
+				block.Incoming = append(block.Incoming, source)
+			}
+		}
+	}
+}
+
+func (ssa *SSAProgram) CollapseJumps() {
+	// This function tries to simplify the SSA by joining blocks
+	// when they will always follow eachother. This is done by
+	// looking at the incoming, if block_1 ends in a `JUMP block_2`
+	// And no other code can flow or jump into `block_2`, we can
+	// put `block_2` at the end of `block_1`.
+	//
+	// @NOTE: This requires finding all the jump targets. Since
+	//        jump targets may be computed, we can never do this
+	//        perfectly.
+	
+	for _, block := range ssa.Blocks {
+		if len(block.Incoming) != 1 {
+			continue
+		}
+		
+		// We want to be next, not the target of a conditional jump
+		source := block.Incoming[0]
+		if source.NextBlock != block {
+			continue
+		}
+		
+		// Okay, merge the blocks!
+		fmt.Printf("MERGING %v %v\n", source.Label, block.Label)
+		
+		
+		for _, statement := range block.Statements {
+			fmt.Printf("%v\n", statement)
+			source.Statements = append(source.Statements, statement)
+		}
+		
+		// Rewire the connections
+		source.NextBlock = block.NextBlock
+		ssa.UpdateJumpTargets(source)
+		block.Label += " REMOVED"
+		
+		
+	}
+}
