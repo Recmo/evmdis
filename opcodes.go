@@ -845,3 +845,4 @@ var stringToOp = map[string]OpCode{
 func StringToOp(str string) OpCode {
 	return stringToOp[str]
 }
+

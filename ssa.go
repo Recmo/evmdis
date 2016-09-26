@@ -29,6 +29,107 @@ type Statement struct {
 	Output     *Variable // Statements can have max one output on the stack.
 }
 
+type opCodeConvention int
+const (
+	NULLARY opCodeConvention = iota
+	UNARY
+	BINARY
+	FUNCTION
+	FIELD
+	MEMBER
+)
+
+type opCodeInfoRecord struct {
+	Convention    opCodeConvention
+	Solidity      string
+}
+
+var opCodeInfo = map[OpCode]opCodeInfoRecord{
+	ADD:          {BINARY,   "+"},
+	MUL:          {BINARY,   "*"},
+	SUB:          {BINARY,   "-"},
+	DIV:          {BINARY,   "/"},
+	SDIV:         {BINARY,   "/"}, // signed
+	MOD:          {BINARY,   "%"},
+	SMOD:         {BINARY,   "%"}, // signed
+	ADDMOD:       {FUNCTION, "addmod"},
+	MULMOD:       {FUNCTION, "mulmod"},
+	EXP:          {BINARY,   "**"},
+	NOT:          {UNARY,    "!"},
+	LT:           {BINARY,   "<"},
+	GT:           {BINARY,   ">"},
+	SLT:          {BINARY,   "<"}, // signed
+	SGT:          {BINARY,   ">"}, // signed
+	EQ:           {BINARY,   "=="},
+	ISZERO:       {BINARY,   "0 =="},
+	AND:          {BINARY,   "&"},
+	OR:           {BINARY,   "|"},
+	XOR:          {BINARY,   "^"},
+	SHA3:         {FUNCTION, "sha3"},
+	ADDRESS:      {NULLARY,  "this"},
+	BALANCE:      {FIELD,    "balance"},
+	ORIGIN:       {NULLARY,  "tx.origin"},
+	CALLER:       {NULLARY,  "msg.sender"},
+	CALLVALUE:    {NULLARY,  "msg.value"},
+	CALLDATALOAD: {FUNCTION, "CALLDATALOAD"},
+	CALLDATASIZE: {FUNCTION, "CALLDATASIZE"},
+	CALLDATACOPY: {FUNCTION, "CALLDATACOPY"},
+	CODESIZE:     {FUNCTION, "CODESIZE"},
+	CODECOPY:     {FUNCTION, "CODECOPY"},
+	GASPRICE:     {NULLARY,  "tx.gasprice"},
+	BLOCKHASH:    {FUNCTION, "block.blockhash"},
+	COINBASE:     {NULLARY,  "block.coinbase"},
+	TIMESTAMP:    {NULLARY,  "block.timestamp"},
+	NUMBER:       {NULLARY,  "block.number"},
+	DIFFICULTY:   {NULLARY,  "block.difficulty"},
+	GASLIMIT:     {NULLARY,  "block.gaslimit"},
+	EXTCODESIZE:  {FUNCTION, "EXTCODESIZE"},
+	EXTCODECOPY:  {FUNCTION, "EXTCODECOPY"},
+	MLOAD:        {FUNCTION, "MLOAD"},
+	MSTORE:       {FUNCTION, "MSTORE"},
+	MSTORE8:      {FUNCTION, "MSTORE8"},
+	SLOAD:        {FUNCTION, "SLOAD"},
+	SSTORE:       {FUNCTION, "SSTORE"},
+	PC:           {FUNCTION, "PC"},
+	MSIZE:        {FUNCTION, "MSIZE"},
+	GAS:          {NULLARY,  "msg.gas"},
+	LOG0:         {FUNCTION, "LOG0"},
+	LOG1:         {FUNCTION, "LOG1"},
+	LOG2:         {FUNCTION, "LOG2"},
+	LOG3:         {FUNCTION, "LOG3"},
+	LOG4:         {FUNCTION, "LOG4"},
+	CREATE:       {FUNCTION, "CREATE"},
+	CALL:         {FUNCTION, "CALL"},
+	RETURN:       {FUNCTION, "RETURN"},
+	CALLCODE:     {FUNCTION, "CALLCODE"},
+	DELEGATECALL: {FUNCTION, "DELEGATECALL"},
+	SELFDESTRUCT: {FUNCTION, "selfdestruct"},
+}
+
+func (statement Statement) Convention() opCodeConvention {
+	return opCodeInfo[statement.Op].Convention
+}
+
+func (statement Statement) Solidity() string {
+	return opCodeInfo[statement.Op].Solidity
+}
+
+func (statement *Statement) Replace(from Expression, to Expression) {
+	oldInputs := statement.Inputs
+	statement.Inputs = make([]Expression, 0)
+	for _, input := range oldInputs {
+		if input == from {
+			input = to
+		}
+		statement.Inputs = append(statement.Inputs, input)
+	}
+	if statement.Output != nil && statement.Output == from {
+		statement.Output = &Variable{
+			Label: to.(Variable).Label,
+		}
+	}
+}
+
 func (constant Constant) String() string {
 	return fmt.Sprintf("0x%X", constant.Value)
 }
@@ -40,16 +141,35 @@ func (variable Variable) String() string {
 func (statement Statement) String() string {
 	str := ""
 	if statement.Output != nil {
-		str += fmt.Sprintf("%v = ", statement.Output)
+		str += fmt.Sprintf("var %v = ", statement.Output)
 	}
-	str += fmt.Sprintf("%v(", statement.Op)
-	for i, exp := range statement.Inputs {
-		str += fmt.Sprintf("%v", exp)
-		if i != len(statement.Inputs) - 1 {
-			str += ", "
+	
+	switch statement.Convention() {
+	case NULLARY:
+		str += fmt.Sprintf("%v", statement.Solidity())
+	case UNARY:
+		str += fmt.Sprintf("%v %v", statement.Solidity(), statement.Inputs[0])
+	case BINARY:
+		str += fmt.Sprintf("%v %v %v", statement.Inputs[0],
+			statement.Solidity(), statement.Inputs[1])
+	case FIELD:
+		str += fmt.Sprintf("%v.%v", statement.Inputs[0], statement.Solidity())
+	case MEMBER, FUNCTION:
+		start := 0
+		if statement.Convention() == MEMBER {
+			str += fmt.Sprintf("%v.", statement.Inputs[0])
+			start = 1
 		}
+		str += fmt.Sprintf("%v(", statement.Solidity())
+		for i := start; i < len(statement.Inputs); i++ {
+			if i > start {
+				str += ", "
+			}
+			str += fmt.Sprintf("%v", statement.Inputs[i])
+		}
+		str += ")"
 	}
-	str += ")"
+	str += ";"
 	return str
 }
 
@@ -57,15 +177,64 @@ type StatementBlock struct {
 	Offset          int
 	Statements      []*Statement
 	Label           string
-	Inputs          []Variable
+	Inputs          []Expression
 	Outputs         []Expression
 	Incoming        []*StatementBlock
 	CondBlocks      []*StatementBlock
 	NextBlock       *StatementBlock
 }
 
-type SSAProgram struct {
-	Blocks          []*StatementBlock
+func (block StatementBlock) String() string {
+	condCounter := 0
+	
+	// Block header
+	str := fmt.Sprintf("0x%X %v: %v → %v\n",
+		block.Offset, block.Label, block.Inputs, block.Outputs)
+	
+	// Origins
+	for _, source := range block.Incoming {
+		str += fmt.Sprintf("\tfrom %v\n", source.Label)
+	}
+	
+	// Statements
+	for _, statement := range block.Statements {
+		switch statement.Op {
+		case JUMPDEST:
+		case JUMP:
+			if block.NextBlock != nil {
+				str += fmt.Sprintf("\tJUMP(%v)\n", block.NextBlock.Label)
+			} else {
+				str += fmt.Sprintf("\t%v\n", statement)
+			}
+		case JUMPI:
+			str += fmt.Sprintf("\tJUMPI %v %v\n", statement.Inputs[1],
+				block.CondBlocks[condCounter].Label)
+			condCounter++
+		default:
+			str += fmt.Sprintf("\t%v\n", statement)
+		}
+	}
+	
+	// Targets
+	if block.NextBlock != nil {
+		str += fmt.Sprintf("\tto %v\n", block.NextBlock.Label)
+	}
+	
+	return str
+}
+
+func (block *StatementBlock) Replace(from Expression, to Expression) {
+	for _, statement := range block.Statements {
+		statement.Replace(from, to)
+	}
+	newOutputs := make([]Expression, 0)
+	for _, output := range block.Outputs {
+		if output == from {
+			output = to
+		}
+		newOutputs = append(newOutputs, output)
+	}
+	block.Outputs = newOutputs
 }
 
 func (block *StatementBlock) CanGoToNext() bool {
@@ -82,7 +251,17 @@ func (block *StatementBlock) CanGoToNext() bool {
 	}
 }
 
-// A counter for generating unique identifiers in the block's scope
+type SSAProgram struct {
+	Blocks          []*StatementBlock
+}
+
+func (ssa SSAProgram) PrintSSA() {
+	for _, block := range ssa.Blocks {
+		fmt.Printf("%v\n", block)
+	}
+}
+
+// A counter for generating unique identifiers
 var ssaCount int
 
 func CompileSSABlock(block *BasicBlock) *StatementBlock {
@@ -92,7 +271,7 @@ func CompileSSABlock(block *BasicBlock) *StatementBlock {
 		Offset:     block.Offset,
 		Label:      block.Label,
 		Statements: make([]*Statement, 0),
-		Inputs:     make([]Variable, 0),
+		Inputs:     make([]Expression, 0),
 		Outputs:    nil,
 		Incoming:   make([]*StatementBlock, 0),
 		CondBlocks: make([]*StatementBlock, 0),
@@ -104,8 +283,9 @@ func CompileSSABlock(block *BasicBlock) *StatementBlock {
 		Values:     make([]Expression, 0),
 	}
 	for i := 0; i < block.Reads; i++ {
+		ssaCount++
 		variable := Variable{
-			Label: "abcdefghijklmnopqrstuvw"[i:i+1],
+			Label: fmt.Sprintf("a%v", ssaCount),
 		}
 		statements.Inputs = append(statements.Inputs, variable)
 		stack.Push(variable)
@@ -162,9 +342,7 @@ func CompileSSABlock(block *BasicBlock) *StatementBlock {
 	}
 	
 	// Check if the stack is empty at the end of the StatementBlock
-	for stack.Size() > 0 {
-		statements.Outputs = append(statements.Outputs, stack.Pop())
-	}
+	statements.Outputs = stack.Values
 	
 	return statements
 }
@@ -192,7 +370,7 @@ func CompileSSA(program *Program) *SSAProgram {
 		Offset:     2,
 		Label:      "ErrorTag",
 		Statements: make([]*Statement, 0),
-		Inputs:     make([]Variable, 0),
+		Inputs:     make([]Expression, 0),
 		Outputs:    nil,
 		Incoming:   make([]*StatementBlock, 0),
 		CondBlocks: make([]*StatementBlock, 0),
@@ -267,7 +445,73 @@ func (ssa *SSAProgram) ComputeIncoming() {
 	}
 }
 
-func (ssa *SSAProgram) CollapseJumps() {
+func Prefix(list *[]Expression, prefix []Expression) {
+	newList := make([]Expression, 0)
+	for _, expression := range prefix {
+		newList = append(newList, expression)
+	}
+	for _, expression := range *list {
+		newList = append(newList, expression)
+	}
+	*list = newList
+}
+
+func (ssa *SSAProgram) MergeBlocks(first *StatementBlock, second *StatementBlock) {
+	
+	// Connect outputs to inputs
+	out := len(first.Outputs)
+	in := len(second.Inputs)
+	if out > in {
+		// The extra outputs are prepended to second's inputs and outputs
+		// making them pass through the second block without being touched.
+		extra := first.Outputs[:out - in]
+		Prefix(&second.Inputs, extra)
+		Prefix(&second.Outputs, extra)
+		in = out
+	}
+	if in > out {
+		// The extra inputs are prepended to the first's inputs and outputs
+		// making them pass through the first block without being touched.
+		extra := second.Inputs[:in - out]
+		Prefix(&first.Inputs, extra)
+		Prefix(&first.Outputs, extra)
+		out = in
+	}
+	
+	// Replace all occurences of seconds inputs with the firsts outputs
+	for i := 0; i < in; i++ {
+		second.Replace(second.Inputs[i], first.Outputs[i])
+	}
+	
+	// Seconds outputs are the merged blocks outputs
+	first.Outputs = second.Outputs
+	
+	// TODO: Remove uncoditional JUMP statement?
+	
+	// Append statements from second block to first
+	for _, statement := range second.Statements {
+		if statement.Op == JUMPDEST {
+			continue
+		}
+		first.Statements = append(first.Statements, statement)
+	}
+	
+	// Remove the second block
+	newBlocks := make([]*StatementBlock, 0)
+	for _, block := range ssa.Blocks {
+		if block != second {
+			newBlocks = append(newBlocks, block)
+		}
+	}
+	ssa.Blocks = newBlocks
+	
+	// Rewire the connections and re-analyse the control flow
+	first.NextBlock = second.NextBlock
+	ssa.UpdateJumpTargets(first)
+	ssa.ComputeIncoming()
+}
+
+func (ssa *SSAProgram) TryCollapseOneJump() bool {
 	// This function tries to simplify the SSA by joining blocks
 	// when they will always follow eachother. This is done by
 	// looking at the incoming, if block_1 ends in a `JUMP block_2`
@@ -289,20 +533,21 @@ func (ssa *SSAProgram) CollapseJumps() {
 			continue
 		}
 		
-		// Okay, merge the blocks!
-		fmt.Printf("MERGING %v %v\n", source.Label, block.Label)
-		
-		
-		for _, statement := range block.Statements {
-			fmt.Printf("%v\n", statement)
-			source.Statements = append(source.Statements, statement)
+		// If the last statement of source is a JUMP, we can drop it
+		n := len(source.Statements)
+		if  n > 0  && source.Statements[n - 1].Op == JUMP {
+			source.Statements = source.Statements[:n - 1]
 		}
 		
-		// Rewire the connections
-		source.NextBlock = block.NextBlock
-		ssa.UpdateJumpTargets(source)
-		block.Label += " REMOVED"
+		// Okay, merge the blocks!
+		ssa.MergeBlocks(source, block)
 		
-		
+		// Return because the itterator may be invalid now
+		return true
 	}
+	return false
+}
+
+func (ssa *SSAProgram) CollapseJumps() {
+	for ssa.TryCollapseOneJump() { }
 }
